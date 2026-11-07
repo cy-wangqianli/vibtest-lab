@@ -1,0 +1,341 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no"/>
+<title>街区地图</title>
+<link rel="stylesheet" href="leaflet.css"/>
+<style>
+  html,body{margin:0;padding:0;height:100%;background:#0B0F14;overflow:hidden;}
+  #map{position:absolute;inset:0;background:#0B0F14;}
+  .leaflet-container{background:#0B0F14;font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;}
+  .leaflet-control-attribution{background:rgba(11,15,20,.7)!important;color:#5E6B7A!important;font-size:10px;}
+  .leaflet-control-scale-line{background:rgba(11,15,20,.6)!important;border-color:#3A4655!important;color:#8B98A9!important;}
+  .pt{display:flex;align-items:center;justify-content:center;width:18px;height:18px;border-radius:9px;
+      background:#0B0F14;border:2px solid #00e676;color:#9ff0c8;font-size:9px;font-weight:600;}
+  .mv{width:14px;height:14px;border-radius:7px;background:#00e676;box-shadow:0 0 0 4px rgba(0,230,118,.3);}
+  .you{width:16px;height:16px;border-radius:8px;background:#4aa3ff;border:3px solid #fff;
+      box-shadow:0 0 0 2px rgba(74,163,255,.45),0 2px 6px rgba(0,0,0,.6);}
+  #ctrl{position:absolute;right:10px;bottom:26px;z-index:600;display:flex;flex-direction:column;gap:8px;}
+  #ctrl button{width:38px;height:38px;border-radius:10px;border:1px solid #2C3846;
+      background:rgba(20,26,34,.92);color:#D7E3F2;font-size:16px;line-height:1;}
+  #live{position:absolute;left:10px;top:calc(8px + env(safe-area-inset-top));z-index:620;
+      background:rgba(11,15,20,.78);border:1px solid #1E2A38;border-radius:12px;
+      padding:8px 12px;color:#E6EDF3;pointer-events:none;min-width:132px;}
+  #live .d{font-size:22px;font-weight:700;letter-spacing:.5px;}
+  #live .r{font-size:11px;color:#8B98A9;margin-top:2px;}
+  #hint{position:absolute;left:10px;bottom:8px;z-index:600;color:#7f8b9b;font-size:10px;
+      background:rgba(11,15,20,.72);padding:3px 7px;border-radius:8px;max-width:70%;}
+  #search{position:absolute;left:10px;right:10px;top:calc(8px + env(safe-area-inset-top));z-index:650;display:none;}
+  #search .box{display:flex;align-items:center;background:rgba(20,26,34,.96);border:1px solid #2C3846;
+      border-radius:12px;height:42px;padding:0 10px;}
+  #search input{flex:1;background:none;border:none;outline:none;color:#E6EDF3;font-size:14px;height:40px;}
+  #search input::placeholder{color:#5E6B7A;}
+  #results{margin-top:6px;background:rgba(20,26,34,.98);border:1px solid #2C3846;border-radius:12px;
+      max-height:180px;overflow:auto;display:none;}
+  #results div{padding:9px 12px;color:#C9D6E5;font-size:12px;border-bottom:1px solid #1E2733;}
+  #results div:last-child{border-bottom:none;}
+  #load{position:absolute;inset:0;z-index:700;display:flex;align-items:center;justify-content:center;
+      background:#0B0F14;color:#8B98A9;font-size:12px;transition:opacity .25s;}
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div id="load">瓦片加载中…</div>
+<div id="ctrl">
+  <button onclick="zoomBy(1)">＋</button>
+  <button onclick="zoomBy(-1)">－</button>
+  <button onclick="resetView()">⌂</button>
+</div>
+<div id="search">
+  <div class="box"><input id="q" placeholder="搜索地点，例如：德阳站" autocomplete="off"/></div>
+  <div id="results"></div>
+</div>
+<div id="live" style="display:none">
+  <div class="d" id="lvDist">0 m</div>
+  <div class="r" id="lvRow">-- · --</div>
+</div>
+<div id="hint">高德瓦片 · Leaflet</div>
+<script src="leaflet.js"></script>
+<script src="china_offline.js"></script>
+<script>
+(function () {
+  var BASE = [31.1289, 104.3979];
+  var map = L.map('map', {
+    zoomControl: false, preferCanvas: true, minZoom: 3, maxZoom: 19,
+    zoomAnimation: true, markerZoomAnimation: true, fadeAnimation: true
+  }).setView(BASE, 15);
+
+  var AMAP = 'https://wprd0{s}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scl=1&style=7&x={x}&y={y}&z={z}';
+  var amap = L.tileLayer(AMAP, {
+    subdomains: ['1', '2', '3', '4'], maxZoom: 19, maxNativeZoom: 18,
+    keepBuffer: 6, updateWhenIdle: false, attribution: '© 高德'
+  }).addTo(map);
+
+  L.control.scale({ imperial: false, position: 'bottomleft', maxWidth: 90 }).addTo(map);
+
+  // 离线底图：省级边界（不联网也能看到轮廓）
+  var provLayer = L.layerGroup().addTo(map);
+  var labelLayer = L.layerGroup().addTo(map);
+  (window.CN_PROVINCES || []).forEach(function (pv) {
+    if (!pv.r || pv.r.length < 4) return;
+    L.polygon(pv.r, { color: '#2C3846', weight: 0.7, fillColor: '#16202B',
+                      fillOpacity: 0.35, interactive: false }).addTo(provLayer);
+    L.marker(pv.c, {
+      interactive: false,
+      icon: L.divIcon({ className: '', iconSize: [0, 0],
+        html: '<span style="color:#6F7C8C;font-size:9px;white-space:nowrap">' + pv.n + '</span>' })
+    }).addTo(labelLayer);
+  });
+  function syncLabels() {
+    if (map.getZoom() <= 6) { if (!map.hasLayer(labelLayer)) labelLayer.addTo(map); }
+    else if (map.hasLayer(labelLayer)) map.removeLayer(labelLayer);
+  }
+  map.on('zoomend', syncLabels);
+  syncLabels();
+
+  var errs = 0, switched = false, loaded = false;
+  amap.on('tileerror', function () {
+    errs++;
+    if (!switched && errs > 8) {
+      switched = true;
+      map.removeLayer(amap);
+      L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        maxZoom: 19, keepBuffer: 6, attribution: '© OpenStreetMap'
+      }).addTo(map);
+      hint('高德瓦片不可用，已切到 OSM');
+    }
+  });
+  amap.on('load', function () { if (!loaded) { loaded = true; hideLoad(); } });
+  setTimeout(hideLoad, 4000);
+
+  function hideLoad() {
+    var el = document.getElementById('load');
+    if (el) { el.style.opacity = '0'; setTimeout(function () { el.style.display = 'none'; }, 300); }
+  }
+
+  var pts = [], marks = [], loopLine = null, loopPts = [], loopLen = 0, sPos = 0;
+  var moving = null, picking = false;
+  var live = null, liveData = [], remote = null, remoteData = [];
+  var here = null;
+
+  function hint(t) { document.getElementById('hint').textContent = t; }
+
+  map.on('click', function (e) {
+    if (!picking) return;
+    pts.push([e.latlng.lat, e.latlng.lng]);
+    marks.push(L.marker(e.latlng, {
+      icon: L.divIcon({
+        className: '', iconSize: [18, 18], iconAnchor: [9, 9],
+        html: '<div class="pt">' + pts.length + '</div>'
+      })
+    }).addTo(map));
+    hint('已选 ' + pts.length + ' 点');
+  });
+
+  function hav(a, b) {
+    var R = 6371000, dLat = (b[0] - a[0]) * Math.PI / 180, dLng = (b[1] - a[1]) * Math.PI / 180;
+    var la1 = a[0] * Math.PI / 180, la2 = b[0] * Math.PI / 180;
+    var h = Math.sin(dLat / 2) * Math.sin(dLat / 2)
+          + Math.cos(la1) * Math.cos(la2) * Math.sin(dLng / 2) * Math.sin(dLng / 2);
+    return 2 * R * Math.asin(Math.min(1, Math.sqrt(h)));
+  }
+
+  function smoothClosed(p, seg) {
+    var n = p.length;
+    if (n < 3) return p.slice();
+    var out = [];
+    for (var i = 0; i < n; i++) {
+      var p0 = p[(i - 1 + n) % n], p1 = p[i], p2 = p[(i + 1) % n], p3 = p[(i + 2) % n];
+      for (var t = 0; t < seg; t++) {
+        var u = t / seg, u2 = u * u, u3 = u2 * u;
+        var lat = 0.5 * ((2 * p1[0]) + (-p0[0] + p2[0]) * u
+                + (2 * p0[0] - 5 * p1[0] + 4 * p2[0] - p3[0]) * u2
+                + (-p0[0] + 3 * p1[0] - 3 * p2[0] + p3[0]) * u3);
+        var lng = 0.5 * ((2 * p1[1]) + (-p0[1] + p2[1]) * u
+                + (2 * p0[1] - 5 * p1[1] + 4 * p2[1] - p3[1]) * u2
+                + (-p0[1] + 3 * p1[1] - 3 * p2[1] + p3[1]) * u3);
+        out.push([lat, lng]);
+      }
+    }
+    out.push(out[0].slice());
+    return out;
+  }
+
+  function totalLen(p) {
+    var s = 0;
+    for (var i = 1; i < p.length; i++) s += hav(p[i - 1], p[i]);
+    return s;
+  }
+
+  function pointAt(p, total, s) {
+    s = ((s % total) + total) % total;
+    for (var i = 1; i < p.length; i++) {
+      var d = hav(p[i - 1], p[i]);
+      if (s <= d) {
+        var k = d > 0 ? s / d : 0;
+        return [p[i - 1][0] + (p[i][0] - p[i - 1][0]) * k,
+                p[i - 1][1] + (p[i][1] - p[i - 1][1]) * k];
+      }
+      s -= d;
+    }
+    return p[p.length - 1];
+  }
+
+  window.zoomBy = function (d) { map.setZoom(map.getZoom() + d); };
+
+  window.resetView = function () {
+    if (here) { map.setView(here.getLatLng(), 17); return; }
+    if (loopLine) { map.fitBounds(loopLine.getBounds(), { padding: [30, 30] }); return; }
+    map.setView(BASE, 15);
+  };
+
+  window.setBase = function (lat, lng, z) { map.setView([lat, lng], z || 15); };
+
+  window.setPicking = function (on) {
+    picking = !!on;
+    hint(picking ? '点击地图加点（≥3 点）' : '高德瓦片 · Leaflet');
+  };
+
+  window.closeLoop = function () {
+    if (pts.length < 3) { hint('至少 3 个点'); return; }
+    loopPts = smoothClosed(pts, 12);
+    loopLen = totalLen(loopPts);
+    sPos = 0;
+    if (loopLine) map.removeLayer(loopLine);
+    loopLine = L.polyline(loopPts, { color: '#00e676', weight: 4, opacity: 0.95 }).addTo(map);
+    if (moving) map.removeLayer(moving);
+    moving = L.marker(loopPts[0], {
+      icon: L.divIcon({ className: '', html: '<div class="mv"></div>', iconSize: [14, 14], iconAnchor: [7, 7] })
+    }).addTo(map);
+    map.fitBounds(loopLine.getBounds(), { padding: [30, 30] });
+    hint('闭环 ' + Math.round(loopLen) + ' m · ' + pts.length + ' 个点');
+
+    if (window.AndroidBridge && AndroidBridge.setLoop) {
+      AndroidBridge.setLoop(JSON.stringify(loopPts), Math.round(loopLen));
+    }
+  };
+
+  window.stepLoop = function (m) {
+    if (!loopPts.length || loopLen <= 0 || !moving) return;
+    sPos += Math.max(0, m);
+    var p = pointAt(loopPts, loopLen, sPos);
+    moving.setLatLng(p);
+    if (map.getZoom() >= 16) map.panTo(p, { animate: false });
+  };
+
+  window.addLive = function (lat, lng, isRemote) {
+    var arr = isRemote ? remoteData : liveData;
+    var line = isRemote ? remote : live;
+    if (arr.length) {
+      var q = arr[arr.length - 1];
+      if (Math.abs(q[0] - lat) < 5e-6 && Math.abs(q[1] - lng) < 5e-6) return;   // 0.5m 内去重
+    }
+    if (!arr.length) {
+      L.circleMarker([lat, lng], { radius: 5, color: '#0B0F14', weight: 2,
+        fillColor: '#00e676', fillOpacity: 1 }).addTo(map);
+    }
+    arr.push([lat, lng]);
+    if (arr.length > 2000) arr.shift();
+    if (!line) {
+      line = L.polyline(arr, { color: isRemote ? '#ffb74d' : '#00e676', weight: 3.5, lineJoin: 'round' }).addTo(map);
+      if (isRemote) remote = line; else live = line;
+    } else {
+      line.setLatLngs(arr);
+    }
+  };
+
+  window.clearAll = function () {
+    for (var i = 0; i < marks.length; i++) map.removeLayer(marks[i]);
+    marks = []; pts = [];
+    if (loopLine) { map.removeLayer(loopLine); loopLine = null; }
+    if (moving) { map.removeLayer(moving); moving = null; }
+    loopPts = []; loopLen = 0; sPos = 0;
+    if (live) { map.removeLayer(live); live = null; }
+    if (remote) { map.removeLayer(remote); remote = null; }
+    liveData = []; remoteData = [];
+    hint('已清空');
+  };
+
+  window.getLoopLength = function () { return loopLen; };
+
+  // ---- 当前位置蓝点 ----
+  window.setStats = function (distText, rowText) {
+    var box = document.getElementById('live');
+    if (!box) return;
+    box.style.display = 'block';
+    document.getElementById('lvDist').textContent = distText;
+    document.getElementById('lvRow').textContent = rowText;
+  };
+
+  window.setHere = function (lat, lng) {
+    if (!here) {
+      here = L.marker([lat, lng], {
+        icon: L.divIcon({ className: '', html: '<div class="you"></div>',
+                          iconSize: [16, 16], iconAnchor: [8, 8] }),
+        interactive: false
+      }).addTo(map);
+      if (!window.__centered) { window.__centered = true; map.setView([lat, lng], 17); }
+    } else {
+      here.setLatLng([lat, lng]);
+    }
+  };
+
+  // ---- 搜索（Photon，与「街区地图」同源） ----
+  window.setSearch = function (on) {
+    document.getElementById('search').style.display = on ? 'block' : 'none';
+  };
+
+  var qi = document.getElementById('q');
+  var rl = document.getElementById('results');
+  var timer = null;
+  qi.addEventListener('input', function () {
+    clearTimeout(timer);
+    var v = qi.value.trim();
+    if (v.length < 2) { rl.style.display = 'none'; return; }
+    timer = setTimeout(function () { search(v); }, 400);
+  });
+
+  function search(v) {
+    fetch('https://photon.komoot.io/api/?limit=5&q=' + encodeURIComponent(v))
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        rl.innerHTML = '';
+        (d.features || []).forEach(function (f) {
+          var c = f.geometry.coordinates;
+          var name = (f.properties.name || f.properties.city || v)
+                   + (f.properties.state ? ' · ' + f.properties.state : '');
+          var row = document.createElement('div');
+          row.textContent = name;
+          row.onclick = function () {
+            map.setView([c[1], c[0]], 16);
+            rl.style.display = 'none';
+            hint(name);
+          };
+          rl.appendChild(row);
+        });
+        rl.style.display = rl.children.length ? 'block' : 'none';
+      })
+      .catch(function () { hint('搜索不可用'); });
+  }
+
+  // ---- 只读展示一条闭环（测试器用） ----
+  window.showLoop = function (json) {
+    try {
+      var p = JSON.parse(json);
+      console.log('showLoop points=' + (p ? p.length : 0));
+      if (!p || p.length < 3) return;
+      map.invalidateSize(true);
+      loopPts = p;
+      loopLen = totalLen(loopPts);
+      if (loopLine) map.removeLayer(loopLine);
+      loopLine = L.polyline(loopPts, { color: '#00e676', weight: 4, opacity: 0.95 }).addTo(map);
+      map.fitBounds(loopLine.getBounds(), { padding: [30, 30] });
+      hint('模拟路线 ' + Math.round(loopLen) + ' m（只读）');
+      console.log('loop first=' + p[0][0].toFixed(5) + ',' + p[0][1].toFixed(5));
+    } catch (e) { hint('路线解析失败'); }
+  };
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<title>3D 城市轨迹</title>
+<style>
+  html,body{margin:0;padding:0;height:100%;overflow:hidden;background:#0b1220;
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif;
+    -webkit-user-select:none;user-select:none;-webkit-tap-highlight-color:transparent;}
+  canvas{display:block;}
+  #hud{position:fixed;left:0;right:0;top:0;padding:calc(8px + env(safe-area-inset-top)) 12px 8px;
+    color:#eaf2ff;pointer-events:none;
+    background:linear-gradient(to bottom,rgba(5,10,20,.75),rgba(5,10,20,0));}
+  #hud .t{font-size:13px;font-weight:600;letter-spacing:.4px;}
+  #hud .s{margin-top:3px;font-size:11px;color:#8fa6c4;}
+  #legend{position:fixed;left:12px;bottom:calc(12px + env(safe-area-inset-bottom));
+    font-size:11px;color:#9fb2cc;pointer-events:none;line-height:1.7;}
+  .dot{display:inline-block;width:8px;height:8px;border-radius:4px;margin-right:6px;vertical-align:1px;}
+</style>
+</head>
+<body>
+<div id="hud">
+  <div class="t">3D 城市轨迹</div>
+  <div class="s" id="stat">拖动旋转 · 双指缩放</div>
+</div>
+<div id="legend">
+  <div><span class="dot" style="background:#00e676"></span>本机轨迹</div>
+  <div><span class="dot" style="background:#ffb74d"></span>接收轨迹</div>
+</div>
+<script src="three.min.js"></script>
+<script>
+(function () {
+  var scene, camera, renderer, clock;
+  var ownLine, ownGeo, ownPos, ownCount = 0;
+  var remLine, remGeo, remPos, remCount = 0;
+  var marker;
+  var cam = { yaw: -0.7, pitch: 0.82, dist: 340, target: new THREE.Vector3(0, 0, 0) };
+  var MAXP = 4000;
+
+  function init() {
+    scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x0b1220);
+    scene.fog = new THREE.Fog(0x0b1220, 420, 1200);
+
+    camera = new THREE.PerspectiveCamera(52, window.innerWidth / window.innerHeight, 1, 4000);
+    renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    document.body.appendChild(renderer.domElement);
+
+    scene.add(new THREE.HemisphereLight(0xbcd4ff, 0x0a1018, 1.15));
+    var dir = new THREE.DirectionalLight(0xffffff, 0.85);
+    dir.position.set(160, 260, 120);
+    scene.add(dir);
+
+    buildCity();
+    buildRoute();
+    bindInput();
+    updateCamera();
+
+    window.addEventListener('resize', function () {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+
+    clock = new THREE.Clock();
+    animate();
+  }
+
+  // ---- 程序化城市 ----
+  function rand() { // 确定性伪随机
+    rand.seed = (rand.seed * 1103515245 + 12345) & 0x7fffffff;
+    return rand.seed / 0x7fffffff;
+  }
+  rand.seed = 20261106;
+
+  function buildCity() {
+    var BLOCK = 34, N = 13;      // 13x13 街区，每块 34 m
+    var span = BLOCK * N;
+
+    var ground = new THREE.Mesh(
+      new THREE.PlaneGeometry(span * 2.2, span * 2.2),
+      new THREE.MeshLambertMaterial({ color: 0x121a26 })
+    );
+    ground.rotation.x = -Math.PI / 2;
+    ground.position.y = -0.2;
+    scene.add(ground);
+
+    // 道路：沿两个方向的细长条
+    var roadMat = new THREE.MeshLambertMaterial({ color: 0x1b2634 });
+    var roadGeoX = new THREE.BoxGeometry(span * 1.9, 0.6, 7);
+    var roadGeoZ = new THREE.BoxGeometry(7, 0.6, span * 1.9);
+    for (var i = -N; i <= N; i++) {
+      var rx = new THREE.Mesh(roadGeoX, roadMat);
+      rx.position.set(0, 0.1, i * BLOCK);
+      scene.add(rx);
+      var rz = new THREE.Mesh(roadGeoZ, roadMat);
+      rz.position.set(i * BLOCK, 0.1, 0);
+      scene.add(rz);
+    }
+
+    // 建筑
+    var boxGeo = new THREE.BoxGeometry(1, 1, 1);
+    var palette = [0x39485c, 0x44566d, 0x2f3c4d, 0x51637a, 0x3c4b60];
+    for (var gx = -N; gx < N; gx++) {
+      for (var gz = -N; gz < N; gz++) {
+        if (rand() < 0.18) continue;               // 空地
+        var cx = gx * BLOCK + BLOCK / 2 + (rand() - 0.5) * 6;
+        var cz = gz * BLOCK + BLOCK / 2 + (rand() - 0.5) * 6;
+        var w = 10 + rand() * 12;
+        var d = 10 + rand() * 12;
+        var h = 8 + rand() * rand() * 120;          // 少数高楼
+        var mat = new THREE.MeshLambertMaterial({
+          color: palette[(rand() * palette.length) | 0]
+        });
+        var m = new THREE.Mesh(boxGeo, mat);
+        m.scale.set(w, h, d);
+        m.position.set(cx, h / 2, cz);
+        scene.add(m);
+      }
+    }
+  }
+
+  // ---- 轨迹 ----
+  function makeLine(color) {
+    var pos = new Float32Array(MAXP * 3);
+    var geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    geo.setDrawRange(0, 0);
+    var line = new THREE.Line(geo, new THREE.LineBasicMaterial({ color: color }));
+    line.frustumCulled = false;
+    scene.add(line);
+    return { line: line, geo: geo, pos: pos };
+  }
+
+  function buildRoute() {
+    var a = makeLine(0x00e676);
+    ownLine = a.line; ownGeo = a.geo; ownPos = a.pos;
+
+    var b = makeLine(0xffb74d);
+    remLine = b.line; remGeo = b.geo; remPos = b.pos;
+
+    marker = new THREE.Mesh(
+      new THREE.SphereGeometry(3.2, 16, 12),
+      new THREE.MeshBasicMaterial({ color: 0x00e676 })
+    );
+    marker.visible = false;
+    scene.add(marker);
+  }
+
+  function fill(pos, geo, pts) {
+    var n = Math.min(pts.length, MAXP);
+    for (var i = 0; i < n; i++) {
+      pos[i * 3] = pts[i][0];
+      pos[i * 3 + 1] = 2.4;
+      pos[i * 3 + 2] = -pts[i][1];   // 平面 y 轴 → 世界 -z
+    }
+    geo.setDrawRange(0, n);
+    geo.attributes.position.needsUpdate = true;
+    geo.computeBoundingSphere();
+    return n;
+  }
+
+  // Android 侧调用：setRoute([[x,y],...], [[x,y],...])
+  window.setRoute = function (own, rem) {
+    own = own || []; rem = rem || [];
+    ownCount = fill(ownPos, ownGeo, own);
+    remCount = fill(remPos, remGeo, rem);
+
+    ownLine.visible = ownCount > 1;
+    remLine.visible = remCount > 1;
+
+    if (ownCount > 0) {
+      var last = own[ownCount - 1];
+      marker.position.set(last[0], 2.4, -last[1]);
+      marker.visible = true;
+    } else {
+      marker.visible = false;
+    }
+
+    // 首帧或轨迹变化较大时自动取景
+    if (ownCount > 1 && !window.__fitted) {
+      window.__fitted = true;
+      fit(own);
+    }
+    updateStat();
+  };
+
+  window.resetView = function () {
+    window.__fitted = false;
+    cam.target.set(0, 0, 0);
+    cam.dist = 340;
+    cam.yaw = -0.7;
+    cam.pitch = 0.82;
+    updateCamera();
+  };
+
+  function fit(pts) {
+    var minx = 1e9, maxx = -1e9, miny = 1e9, maxy = -1e9;
+    for (var i = 0; i < pts.length; i++) {
+      var x = pts[i][0], y = pts[i][1];
+      if (x < minx) minx = x; if (x > maxx) maxx = x;
+      if (y < miny) miny = y; if (y > maxy) maxy = y;
+    }
+    cam.target.set((minx + maxx) / 2, 0, -(miny + maxy) / 2);
+    var span = Math.max(maxx - minx, maxy - miny, 60);
+    cam.dist = Math.max(160, span * 2.2);
+    updateCamera();
+  }
+
+  function updateStat() {
+    var el = document.getElementById('stat');
+    if (!el) return;
+    el.textContent = '本机 ' + ownCount + ' 点 · 接收 ' + remCount + ' 点';
+  }
+
+  // ---- 相机与手势 ----
+  function updateCamera() {
+    var cp = Math.cos(cam.pitch), sp = Math.sin(cam.pitch);
+    camera.position.set(
+      cam.target.x + cam.dist * cp * Math.sin(cam.yaw),
+      cam.target.y + cam.dist * sp,
+      cam.target.z + cam.dist * cp * Math.cos(cam.yaw)
+    );
+    camera.lookAt(cam.target);
+  }
+
+  function bindInput() {
+    var el = renderer.domElement;
+    var dragging = false, lastX = 0, lastY = 0, pinchDist = 0;
+
+    el.addEventListener('touchstart', function (e) {
+      if (e.touches.length === 1) {
+        dragging = true; lastX = e.touches[0].clientX; lastY = e.touches[0].clientY;
+      } else if (e.touches.length === 2) {
+        dragging = false;
+        pinchDist = dist2(e);
+      }
+    }, { passive: true });
+
+    el.addEventListener('touchmove', function (e) {
+      if (e.touches.length === 1 && dragging) {
+        var dx = e.touches[0].clientX - lastX;
+        var dy = e.touches[0].clientY - lastY;
+        lastX = e.touches[0].clientX; lastY = e.touches[0].clientY;
+        cam.yaw -= dx * 0.006;
+        cam.pitch = Math.min(1.45, Math.max(0.12, cam.pitch + dy * 0.005));
+        updateCamera();
+      } else if (e.touches.length === 2) {
+        var d = dist2(e);
+        if (pinchDist > 0) {
+          cam.dist = Math.min(1600, Math.max(50, cam.dist * (pinchDist / d)));
+          updateCamera();
+        }
+        pinchDist = d;
+      }
+      e.preventDefault();
+    }, { passive: false });
+
+    el.addEventListener('touchend', function () { dragging = false; pinchDist = 0; }, { passive: true });
+  }
+
+  function dist2(e) {
+    var dx = e.touches[0].clientX - e.touches[1].clientX;
+    var dy = e.touches[0].clientY - e.touches[1].clientY;
+    return Math.sqrt(dx * dx + dy * dy);
+  }
+
+  function animate() {
+    requestAnimationFrame(animate);
+    renderer.render(scene, camera);
+  }
+
+  window.addEventListener('load', init);
+})();
+</script>
+</body>
+</html>

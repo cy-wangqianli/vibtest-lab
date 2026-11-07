@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.dsh.vibshake"
+    android:versionCode="69"
+    android:versionName="5.4">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_MOCK_LOCATION" />
+    <uses-permission android:name="android.permission.VIBRATE" />
+    <uses-feature android:name="android.hardware.sensor.accelerometer" android:required="false" />
+    <uses-feature android:name="android.hardware.vibrator" android:required="false" />
+
+    <application
+        android:label="震摇测试"
+        android:icon="@drawable/ic_launcher"
+        android:roundIcon="@drawable/ic_launcher"
+        android:allowBackup="false"
+        android:supportsRtl="true">
+        <activity
+            android:name=".MainActivity"
+            android:label="震摇测试"
+            android:icon="@drawable/ic_launcher"
+            android:roundIcon="@drawable/ic_launcher"
+            android:exported="true"
+            android:screenOrientation="portrait"
+            android:theme="@android:style/Theme.Material.NoActionBar">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <receiver
+            android:name=".MockShakeReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="com.dsh.vibshake.MOCK_SHAKE" />
+                <action android:name="com.dsh.vibshake.MOCK_STEP" />
+                <action android:name="com.dsh.vibshake.ROUTE" />
+                <action android:name="com.dsh.vibshake.GEO" />
+                <action android:name="com.dsh.vibshake.LOOP" />
+            </intent-filter>
+        </receiver>
+    </application>
+</manifest>

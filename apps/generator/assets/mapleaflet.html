@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no"/>
+<title>路线地图</title>
+<link rel="stylesheet" href="leaflet.css"/>
+<style>
+  html,body{margin:0;padding:0;height:100%;background:#0B0F14;overflow:hidden;}
+  #map{position:absolute;inset:0;background:#0B0F14;}
+  .leaflet-container{background:#0B0F14;font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;}
+  .leaflet-control-attribution{background:rgba(11,15,20,.75)!important;color:#5E6B7A!important;font-size:10px;}
+  .leaflet-control-attribution a{color:#8B98A9!important;}
+  .pt{width:10px;height:10px;border-radius:5px;background:#0B0F14;border:2px solid #00e676;}
+  .mv{width:14px;height:14px;border-radius:7px;background:#00e676;box-shadow:0 0 0 4px rgba(0,230,118,.3);}
+  #hint{position:absolute;left:10px;bottom:10px;z-index:500;color:#7f8b9b;font-size:10px;
+        background:rgba(11,15,20,.7);padding:3px 7px;border-radius:8px;}
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div id="hint">影位底图 · Leaflet</div>
+<script src="leaflet.js"></script>
+<script src="geo/land.js"></script>
+<script src="geo/countries.js"></script>
+<script src="geo/cities.js"></script>
+<script>
+(function () {
+  var BASE = [31.1289, 104.3979];   // 德阳
+  var map = L.map('map', { zoomControl: false, preferCanvas: true, minZoom: 2, maxZoom: 19 })
+             .setView(BASE, 13);
+
+  var LAND = window.GEO_LAND || { features: [] };
+  var COUNTRIES = window.GEO_COUNTRIES || { features: [] };
+  L.geoJSON(LAND, { style: { color: '#26323F', weight: 1, fillColor: '#151D27', fillOpacity: 1 }, interactive: false }).addTo(map);
+  L.geoJSON(COUNTRIES, { style: { color: '#2C3846', weight: 0.8, fillOpacity: 0 }, interactive: false }).addTo(map);
+
+  var tiles = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 19, attribution: '&copy; OpenStreetMap'
+  }).addTo(map);
+  var tileErr = 0;
+  tiles.on('tileerror', function () {
+    if (++tileErr === 24) { map.removeLayer(tiles); hint('离线：仅显示轮廓'); }
+  });
+
+  var pts = [], markers = [], loopLine = null, loopPts = [], loopLen = 0, sPos = 0;
+  var moving = null, picking = false;
+  var live = null, liveData = [], remote = null, remoteData = [];
+
+  function hint(t) { document.getElementById('hint').textContent = t; }
+
+  map.on('click', function (e) {
+    if (!picking) return;
+    pts.push([e.latlng.lat, e.latlng.lng]);
+    markers.push(L.marker(e.latlng, {
+      icon: L.divIcon({ className: '', html: '<div class="pt"></div>', iconSize: [10, 10], iconAnchor: [5, 5] })
+    }).addTo(map));
+    hint('已选 ' + pts.length + ' 点');
+  });
+
+  function hav(a, b) {
+    var R = 6371000, dLat = (b[0] - a[0]) * Math.PI / 180, dLng = (b[1] - a[1]) * Math.PI / 180;
+    var la1 = a[0] * Math.PI / 180, la2 = b[0] * Math.PI / 180;
+    var h = Math.sin(dLat / 2) * Math.sin(dLat / 2) + Math.cos(la1) * Math.cos(la2) * Math.sin(dLng / 2) * Math.sin(dLng / 2);
+    return 2 * R * Math.asin(Math.min(1, Math.sqrt(h)));
+  }
+
+  function smoothClosed(p, seg) {
+    var n = p.length;
+    if (n < 3) return p.slice();
+    var out = [];
+    for (var i = 0; i < n; i++) {
+      var p0 = p[(i - 1 + n) % n], p1 = p[i], p2 = p[(i + 1) % n], p3 = p[(i + 2) % n];
+      for (var t = 0; t < seg; t++) {
+        var u = t / seg, u2 = u * u, u3 = u2 * u;
+        var lat = 0.5 * ((2 * p1[0]) + (-p0[0] + p2[0]) * u
+                + (2 * p0[0] - 5 * p1[0] + 4 * p2[0] - p3[0]) * u2
+                + (-p0[0] + 3 * p1[0] - 3 * p2[0] + p3[0]) * u3);
+        var lng = 0.5 * ((2 * p1[1]) + (-p0[1] + p2[1]) * u
+                + (2 * p0[1] - 5 * p1[1] + 4 * p2[1] - p3[1]) * u2
+                + (-p0[1] + 3 * p1[1] - 3 * p2[1] + p3[1]) * u3);
+        out.push([lat, lng]);
+      }
+    }
+    out.push(out[0].slice());
+    return out;
+  }
+
+  function totalLen(p) {
+    var s = 0;
+    for (var i = 1; i < p.length; i++) s += hav(p[i - 1], p[i]);
+    return s;
+  }
+
+  function pointAt(p, total, s) {
+    s = ((s % total) + total) % total;
+    for (var i = 1; i < p.length; i++) {
+      var d = hav(p[i - 1], p[i]);
+      if (s <= d) {
+        var k = d > 0 ? s / d : 0;
+        return [p[i - 1][0] + (p[i][0] - p[i - 1][0]) * k,
+                p[i - 1][1] + (p[i][1] - p[i - 1][1]) * k];
+      }
+      s -= d;
+    }
+    return p[p.length - 1];
+  }
+
+  window.setBase = function (lat, lng, z) { map.setView([lat, lng], z || 13); };
+
+  window.setPicking = function (on) {
+    picking = !!on;
+    hint(picking ? '点击地图加点（≥3 点）' : '影位底图 · Leaflet');
+  };
+
+  window.closeLoop = function () {
+    if (pts.length < 3) { hint('至少 3 个点'); return; }
+    loopPts = smoothClosed(pts, 10);
+    loopLen = totalLen(loopPts);
+    sPos = 0;
+    if (loopLine) map.removeLayer(loopLine);
+    loopLine = L.polyline(loopPts, { color: '#00e676', weight: 4, opacity: 0.95 }).addTo(map);
+    if (moving) map.removeLayer(moving);
+    moving = L.marker(loopPts[0], {
+      icon: L.divIcon({ className: '', html: '<div class="mv"></div>', iconSize: [14, 14], iconAnchor: [7, 7] })
+    }).addTo(map);
+    map.fitBounds(loopLine.getBounds(), { padding: [24, 24] });
+    hint('闭环 ' + Math.round(loopLen) + ' m');
+  };
+
+  window.stepLoop = function (m) {
+    if (!loopPts.length || loopLen <= 0 || !moving) return;
+    sPos += Math.max(0, m);
+    var p = pointAt(loopPts, loopLen, sPos);
+    moving.setLatLng(p);
+  };
+
+  window.addLive = function (lat, lng, isRemote) {
+    var arr = isRemote ? remoteData : liveData;
+    var line = isRemote ? remote : live;
+    arr.push([lat, lng]);
+    if (arr.length > 2000) arr.shift();
+    if (!line) {
+      line = L.polyline(arr, { color: isRemote ? '#ffb74d' : '#4aa3ff', weight: 3 }).addTo(map);
+      if (isRemote) remote = line; else live = line;
+    } else {
+      line.setLatLngs(arr);
+    }
+  };
+
+  window.clearAll = function () {
+    for (var i = 0; i < markers.length; i++) map.removeLayer(markers[i]);
+    markers = []; pts = [];
+    if (loopLine) { map.removeLayer(loopLine); loopLine = null; }
+    if (moving) { map.removeLayer(moving); moving = null; }
+    loopPts = []; loopLen = 0; sPos = 0;
+    if (live) { map.removeLayer(live); live = null; }
+    if (remote) { map.removeLayer(remote); remote = null; }
+    liveData = []; remoteData = [];
+    hint('已清空');
+  };
+
+  window.getLoopLength = function () { return loopLen; };
+})();
+</script>
+</body>
+</html>

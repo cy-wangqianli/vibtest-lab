@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<title>2D 街区地图</title>
+<style>
+  html,body{margin:0;padding:0;height:100%;background:#0b1018;overflow:hidden;
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif;
+    -webkit-user-select:none;user-select:none;-webkit-tap-highlight-color:transparent;}
+  canvas{display:block;width:100%;height:100%;touch-action:none;}
+  #hud{position:fixed;left:0;right:0;top:0;padding:6px 10px;color:#dbe6f5;font-size:11px;
+    background:linear-gradient(to bottom,rgba(6,10,16,.85),rgba(6,10,16,0));pointer-events:none;}
+  #hud b{color:#7fd1ae;font-weight:600;}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="hud"><span id="tip">拖动平移 · 双指缩放</span></div>
+<script src="mapdata.js"></script>
+<script>
+(function () {
+  var cv = document.getElementById('c');
+  var ctx = cv.getContext('2d');
+  var W = 1, H = 1, DPR = 1;
+
+  // 视图：世界米 → 屏幕
+  var view = { cx: 0, cy: 0, scale: 1 };   // scale = px/m
+  var bounds = null;
+
+  var picking = false;
+  var waypoints = [];       // [[x,y],...]
+  var loop = null;          // 平滑后的闭环 [[x,y],...]
+  var loopLen = 0;
+  var markerS = 0;          // 沿环线的里程（米）
+  var liveTrack = [];       // 实时轨迹（米制）
+  var remTrack = [];
+
+  function resize() {
+    DPR = Math.min(window.devicePixelRatio || 1, 2);
+    W = cv.clientWidth; H = cv.clientHeight;
+    cv.width = Math.floor(W * DPR); cv.height = Math.floor(H * DPR);
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    draw();
+  }
+
+  function computeBounds() {
+    var minx = 1e18, maxx = -1e18, miny = 1e18, maxy = -1e18;
+    var b = MAP.buildings, r = MAP.roads;
+    for (var i = 0; i < b.length; i++) {
+      var p = b[i];
+      for (var j = 0; j < p.length; j += 2) {
+        if (p[j] < minx) minx = p[j]; if (p[j] > maxx) maxx = p[j];
+        if (p[j + 1] < miny) miny = p[j + 1]; if (p[j + 1] > maxy) maxy = p[j + 1];
+      }
+    }
+    for (var k = 0; k < r.length; k++) {
+      var q = r[k][1];
+      for (var m = 0; m < q.length; m += 2) {
+        if (q[m] < minx) minx = q[m]; if (q[m] > maxx) maxx = q[m];
+        if (q[m + 1] < miny) miny = q[m + 1]; if (q[m + 1] > maxy) maxy = q[m + 1];
+      }
+    }
+    if (minx > maxx) { minx = -200; maxx = 200; miny = -200; maxy = 200; }
+    bounds = { minx: minx, maxx: maxx, miny: miny, maxy: maxy };
+  }
+
+  function fitAll() {
+    if (!bounds) return;
+    var spanX = Math.max(60, bounds.maxx - bounds.minx);
+    var spanY = Math.max(60, bounds.maxy - bounds.miny);
+    view.cx = (bounds.minx + bounds.maxx) / 2;
+    view.cy = (bounds.miny + bounds.maxy) / 2;
+    view.scale = Math.min(W / spanX, H / spanY) * 0.92;
+    draw();
+  }
+
+  function sx(x) { return (x - view.cx) * view.scale + W / 2; }
+  function sy(y) { return H / 2 - (y - view.cy) * view.scale; }
+  function wx(px) { return (px - W / 2) / view.scale + view.cx; }
+  function wy(py) { return (H / 2 - py) / view.scale + view.cy; }
+
+  var ROAD_W = [16, 12, 9, 7, 5.5, 4];   // 米
+
+  function draw() {
+    if (!MAP) return;
+    ctx.clearRect(0, 0, W, H);
+    ctx.fillStyle = '#0b1018';
+    ctx.fillRect(0, 0, W, H);
+
+    // 建筑
+    var b = MAP.buildings;
+    ctx.fillStyle = '#1d2735';
+    ctx.strokeStyle = '#2c3a4d';
+    ctx.lineWidth = 0.6;
+    for (var i = 0; i < b.length; i++) {
+      var p = b[i], n = p.length;
+      if (n < 6) continue;
+      var minX = 1e18, maxX = -1e18, minY = 1e18, maxY = -1e18;
+      for (var j = 0; j < n; j += 2) {
+        if (p[j] < minX) minX = p[j]; if (p[j] > maxX) maxX = p[j];
+        if (p[j + 1] < minY) minY = p[j + 1]; if (p[j + 1] > maxY) maxY = p[j + 1];
+      }
+      if (sx(maxX) < 0 || sx(minX) > W || sy(maxY) > H || sy(minY) < 0) continue;
+
+      ctx.beginPath();
+      ctx.moveTo(sx(p[0]), sy(p[1]));
+      for (var k = 2; k < n; k += 2) ctx.lineTo(sx(p[k]), sy(p[k + 1]));
+      ctx.closePath();
+      ctx.fill();
+      if (view.scale > 0.7) ctx.stroke();
+    }
+
+    // 道路
+    var r = MAP.roads;
+    ctx.lineCap = 'round';
+    for (var ri = 0; ri < r.length; ri++) {
+      var cls = r[ri][0], pts = r[ri][1];
+      if (!pts || pts.length < 4) continue;
+      ctx.strokeStyle = cls <= 2 ? '#2f3d4f' : '#26313f';
+      ctx.lineWidth = Math.max(1, ROAD_W[Math.min(cls, 5)] * view.scale);
+      ctx.beginPath();
+      ctx.moveTo(sx(pts[0]), sy(pts[1]));
+      for (var pi = 2; pi < pts.length; pi += 2) ctx.lineTo(sx(pts[pi]), sy(pts[pi + 1]));
+      ctx.stroke();
+    }
+
+    // 实时轨迹
+    drawPolyline(remTrack, '#ffb74d', 3.5);
+    drawPolyline(liveTrack, '#4aa3ff', 3);
+
+    // 用户选点与闭环
+    if (loop) drawPolyline(loop, '#00e676', 4);
+    if (waypoints.length) {
+      for (var w = 0; w < waypoints.length; w++) {
+        var px = sx(waypoints[w][0]), py = sy(waypoints[w][1]);
+        ctx.beginPath();
+        ctx.arc(px, py, 6, 0, Math.PI * 2);
+        ctx.fillStyle = '#0b1018'; ctx.fill();
+        ctx.lineWidth = 2; ctx.strokeStyle = '#00e676'; ctx.stroke();
+        ctx.fillStyle = '#a8f0cd';
+        ctx.font = '9px sans-serif';
+        ctx.fillText(String(w + 1), px + 8, py - 6);
+      }
+    }
+
+    // 环线上的移动点
+    if (loop && loopLen > 0) {
+      var p = pointAt(loop, loopLen, markerS % loopLen);
+      ctx.beginPath();
+      ctx.arc(sx(p[0]), sy(p[1]), 7, 0, Math.PI * 2);
+      ctx.fillStyle = '#00e676'; ctx.fill();
+      ctx.beginPath();
+      ctx.arc(sx(p[0]), sy(p[1]), 12, 0, Math.PI * 2);
+      ctx.strokeStyle = 'rgba(0,230,118,.35)'; ctx.lineWidth = 2; ctx.stroke();
+    }
+
+    // 比例尺
+    var meter = 100;
+    if (view.scale < 0.15) meter = 1000;
+    else if (view.scale < 0.5) meter = 500;
+    var px100 = meter * view.scale;
+    ctx.strokeStyle = '#5c6b7e'; ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(12, H - 16); ctx.lineTo(12 + px100, H - 16);
+    ctx.moveTo(12, H - 20); ctx.lineTo(12, H - 12);
+    ctx.moveTo(12 + px100, H - 20); ctx.lineTo(12 + px100, H - 12);
+    ctx.stroke();
+    ctx.fillStyle = '#7d8a9b'; ctx.font = '10px sans-serif';
+    ctx.fillText(meter + ' m', 12, H - 22);
+  }
+
+  function drawPolyline(pts, color, width) {
+    if (!pts || pts.length < 2) return;
+    ctx.strokeStyle = color;
+    ctx.lineWidth = width;
+    ctx.beginPath();
+    ctx.moveTo(sx(pts[0][0]), sy(pts[0][1]));
+    for (var i = 1; i < pts.length; i++) ctx.lineTo(sx(pts[i][0]), sy(pts[i][1]));
+    ctx.stroke();
+  }
+
+  // ---- 闭环平滑：Catmull-Rom，首尾相接 ----
+  function smoothClosed(pts, seg) {
+    var n = pts.length;
+    if (n < 3) return pts.slice();
+    var out = [];
+    for (var i = 0; i < n; i++) {
+      var p0 = pts[(i - 1 + n) % n], p1 = pts[i], p2 = pts[(i + 1) % n], p3 = pts[(i + 2) % n];
+      for (var t = 0; t < seg; t++) {
+        var u = t / seg;
+        var u2 = u * u, u3 = u2 * u;
+        var x = 0.5 * ((2 * p1[0]) + (-p0[0] + p2[0]) * u
+              + (2 * p0[0] - 5 * p1[0] + 4 * p2[0] - p3[0]) * u2
+              + (-p0[0] + 3 * p1[0] - 3 * p2[0] + p3[0]) * u3);
+        var y = 0.5 * ((2 * p1[1]) + (-p0[1] + p2[1]) * u
+              + (2 * p0[1] - 5 * p1[1] + 4 * p2[1] - p3[1]) * u2
+              + (-p0[1] + 3 * p1[1] - 3 * p2[1] + p3[1]) * u3);
+        out.push([x, y]);
+      }
+    }
+    out.push(out[0].slice());
+    return out;
+  }
+
+  function lengthOf(pts) {
+    var s = 0;
+    for (var i = 1; i < pts.length; i++) {
+      var dx = pts[i][0] - pts[i - 1][0], dy = pts[i][1] - pts[i - 1][1];
+      s += Math.sqrt(dx * dx + dy * dy);
+    }
+    return s;
+  }
+
+  function pointAt(pts, total, s) {
+    s = ((s % total) + total) % total;
+    for (var i = 1; i < pts.length; i++) {
+      var dx = pts[i][0] - pts[i - 1][0], dy = pts[i][1] - pts[i - 1][1];
+      var seg = Math.sqrt(dx * dx + dy * dy);
+      if (s <= seg) {
+        var k = seg > 0 ? s / seg : 0;
+        return [pts[i - 1][0] + dx * k, pts[i - 1][1] + dy * k];
+      }
+      s -= seg;
+    }
+    return pts[pts.length - 1];
+  }
+
+  // ---- 手势 ----
+  var dragging = false, lastX = 0, lastY = 0, pinchD = 0, moved = 0;
+
+  cv.addEventListener('touchstart', function (e) {
+    if (e.touches.length === 1) {
+      dragging = true; moved = 0;
+      lastX = e.touches[0].clientX; lastY = e.touches[0].clientY;
+    } else if (e.touches.length === 2) {
+      dragging = false; pinchD = dist(e);
+    }
+  }, { passive: true });
+
+  cv.addEventListener('touchmove', function (e) {
+    if (e.touches.length === 1 && dragging) {
+      var x = e.touches[0].clientX, y = e.touches[0].clientY;
+      var dx = x - lastX, dy = y - lastY;
+      moved += Math.abs(dx) + Math.abs(dy);
+      lastX = x; lastY = y;
+      view.cx -= dx / view.scale;
+      view.cy += dy / view.scale;
+      draw();
+    } else if (e.touches.length === 2) {
+      var d = dist(e);
+      if (pinchD > 0) {
+        var f = d / pinchD;
+        var mx = (e.touches[0].clientX + e.touches[1].clientX) / 2;
+        var my = (e.touches[0].clientY + e.touches[1].clientY) / 2;
+        var wx0 = wx(mx), wy0 = wy(my);
+        view.scale = Math.max(0.05, Math.min(12, view.scale * f));
+        view.cx += wx0 - wx(mx);
+        view.cy += wy0 - wy(my);
+        draw();
+      }
+      pinchD = d;
+    }
+    e.preventDefault();
+  }, { passive: false });
+
+  cv.addEventListener('touchend', function (e) {
+    if (dragging && moved < 8 && picking && e.changedTouches.length) {
+      var t = e.changedTouches[0];
+      waypoints.push([wx(t.clientX), wy(t.clientY)]);
+      loop = null;
+      tip('已选 ' + waypoints.length + ' 点，再点「闭合」');
+      draw();
+    }
+    dragging = false; pinchD = 0;
+  }, { passive: true });
+
+  function dist(e) {
+    var dx = e.touches[0].clientX - e.touches[1].clientX;
+    var dy = e.touches[0].clientY - e.touches[1].clientY;
+    return Math.sqrt(dx * dx + dy * dy);
+  }
+
+  function tip(t) { document.getElementById('tip').textContent = t; }
+
+  // ---- 对外接口（Android 调用） ----
+  window.setPicking = function (on) {
+    picking = !!on;
+    tip(picking ? '点地图加点（至少 3 点）' : '拖动平移 · 双指缩放');
+    draw();
+  };
+
+  window.closeLoop = function () {
+    if (waypoints.length < 3) { tip('至少需要 3 个点'); return; }
+    loop = smoothClosed(waypoints, 12);
+    loopLen = lengthOf(loop);
+    markerS = 0;
+    tip('闭环 ' + Math.round(loopLen) + ' m · 开始循环');
+    draw();
+  };
+
+  window.stepLoop = function (meters) {
+    if (!loop || loopLen <= 0) return;
+    markerS += Math.max(0, meters);
+    draw();
+  };
+
+  window.clearAll = function () {
+    waypoints = []; loop = null; loopLen = 0; markerS = 0;
+    liveTrack = []; remTrack = [];
+    tip('已清空');
+    draw();
+  };
+
+  window.addLive = function (x, y, remote) {
+    var arr = remote ? remTrack : liveTrack;
+    arr.push([x, y]);
+    if (arr.length > 3000) arr.shift();
+    draw();
+  };
+
+  window.fitAll = fitAll;
+  window.getLoopLength = function () { return loopLen; };
+
+  if (!window.MAP) {
+    window.MAP = { roads: [], buildings: [] };
+    tip('地图数据未加载（mapdata.js 缺失）');
+  }
+
+  window.addEventListener('resize', resize);
+  window.addEventListener('load', function () {
+    resize();
+    computeBounds();
+    fitAll();
+  });
+})();
+</script>
+</body>
+</html>

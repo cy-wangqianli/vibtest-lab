@@ -1,0 +1,52 @@
+# 由 dsh-ledger-memory 追加
+# ── dsh-ledger-memory：记忆文件默认不进版本库（含用户原话 / 本机路径 / 私有项目名）──
+# ★ 要公开这些内容，请**显式删掉**下面这几行 —— 默认挡是因为泄露不可撤销。
+LEDGER.md
+DECISIONS.md
+JOURNAL.md
+GOALS.md
+LESSONS.md
+PRINCIPLES.md
+.dsh-ledger.json
+decisions/
+lessons/
+goals/
+_ledger-archive/
+_ledger-log/
+_stash/
+_handoff/
+decisions
+lessons
+goals
+
+# 由 dsh-ledger-memory 追加
+/vibtest-handoff-ledger-memory/
+
+# ── 签名密钥：绝不入库 ──
+*.keystore
+*.jks
+*.p12
+*.idsig
+
+# ── 构建产物 ──
+apps/*/build/
+build/
+dist/
+*.class
+*.dex
+
+# ── 打包成品：只走 Release，不进历史 ──
+*.apk
+
+# ── 衍生地图数据：授权各异且含具体地理位置，不入库，用 tools/ 自行生成 ──
+# 详见 ATTRIBUTIONS.md
+apps/tester/assets/mapdata.js
+apps/*/assets/china_offline.js
+apps/*/assets/geo/
+
+# ── 本机环境 ──
+.scratch/
+.idea/
+local.properties
+.DS_Store
+Thumbs.db
