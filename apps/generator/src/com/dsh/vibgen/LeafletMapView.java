@@ -18,8 +18,8 @@ public class LeafletMapView extends WebView {
     public interface Listener { void onConsole(String msg); void onReady(); }
     public interface LoopListener { void onLoop(String json, int lengthMeters); }
 
-    private static final double BASE_LAT = 31.1289;
-    private static final double BASE_LNG = 104.3979;
+    private static final double BASE_LAT = 30.657;
+    private static final double BASE_LNG = 104.066;
 
     private boolean ready = false;
     private Listener listener;

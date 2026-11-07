@@ -1,0 +1,8 @@
+{
+  "city": "chengdu",
+  "lat": 30.657,
+  "lng": 104.066,
+  "zoom_street": 15,
+  "zoom_overview": 13,
+  "note": "地图锚点唯一来源。改这里 → 跑 python tools/set_city.py 同步到 Java 常量与 HTML。改城市后必须重生成 mapdata.js（set_city.py --fetch）否则离线城市平面会对不上。"
+}

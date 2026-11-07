@@ -204,6 +204,26 @@ SDK / build-tools / platform / JDK **全部自动探测**，不硬编码版本�
 - 交互：点选加点、`Catmull-Rom` 闭合平滑、拖动/双指缩放、比例尺、回到当前位置
 - 坐标：地图用 GCJ-02，系统用 WGS-84，转换在 `GeoUtil`
 
+### 5.1 地图锚点集中配置（换城市只改一处）
+
+米制平面坐标要换算成经纬度才画得上地图，锚点原先散落在 7 个文件、12 处，漏改一处就是
+「整条轨迹偏移几十公里」这种极难查的 bug。现在唯一来源是 [`tools/mapcity.json`](tools/mapcity.json)：
+
+```bash
+python tools/set_city.py                      # 把 mapcity.json 同步到所有 Java 常量与 HTML
+python tools/set_city.py --check              # 只校验：所有文件是否都与 json 一致（可进 CI）
+python tools/set_city.py --city deyang        # 切到内置城市（写回 json 并同步）
+python tools/set_city.py --city chengdu --fetch --km 3
+                                              # 顺带重生成 mapdata.js（需联网 Overpass）
+```
+
+内置 11 城：`deyang chengdu mianyang chongqing xian beijing shanghai guangzhou shenzhen wuhan hangzhou`。
+
+★ **换城市后必须重生成 `mapdata.js`**（`--fetch` 或直接跑 `tools/fetch_osm.py`），
+否则离线城市平面还是老城市的，会和锚点错位。
+★ 本脚本**刻意不新增 Java 类**——本项目 dex 类集合是与成品 APK 的比对基准，
+多一个 `MapConfig` 类会让 `tools/verify_parity.py` FAIL。所以它是原地重写常量，类结构不变。
+
 ---
 
 ## 6. 本次恢复的东西（交接包丢了什么）
@@ -247,6 +267,17 @@ python tools/verify_parity.py --expect apks/VibShakeTest2.apk \
 
 `--strict` 可把 compileSdkVersion 也纳入严格比对；
 `--strict-synthetics` 连 d8/R8 生成的 `$$ExternalSyntheticLambda*` 一起比（需要与成品同版本 build-tools，否则必然误报）。
+
+**声明的差异用 `--skip` 排除**：改了地图锚点（§5.1）之后，`mapstreet.html` / `mapleaflet.html`
+的内容必然与成品不同，这时用
+
+```bash
+python tools/verify_parity.py --expect apks/VibGen.apk \
+                             --actual apps/generator/build/VibGen.apk --skip assets
+```
+
+仍会严格比对清单、`resources.arsc` 包名与全部 dex 类/方法；只有 assets 维度被跳过。
+（`--skip` 可取 `manifest` / `resources` / `assets` / `dex`，可多次给。）
 
 ---
 
@@ -332,6 +363,8 @@ apks/             交接时的参考成品（勿覆盖，验收基线）
 ## 12. 开发建议
 
 - 改地图页只需改 `apps/*/assets/mapstreet.html`，两端共用，改完两边都要同步。
+- **换地图城市别手动改常量**：改 `tools/mapcity.json` 或跑 `python tools/set_city.py --city <城市>`（§5.1），
+  它会同步全部 12 处；改完记得重生成 `mapdata.js`，并用 `--check` 确认没有漏改。
 - 加检测项：在 `MainActivity.scoreFixes()` 里加判据，记得同步更新 `docs/detection.md` 的扣分表。
 - 加波形：Generator 的 `build()` / `VibeService.vibratePattern()` 两处都要改（前台服务是独立实现）。
 - 调阈值前先跑 `tools/sim/` 的仿真，别在真机上盲试。

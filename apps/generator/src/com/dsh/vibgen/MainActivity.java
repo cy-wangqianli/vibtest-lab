@@ -343,13 +343,13 @@ public class MainActivity extends Activity {
         LinearLayout rowTele = new LinearLayout(this);
         rowTele.setOrientation(LinearLayout.HORIZONTAL);
         etLat = new EditText(this);
-        etLat.setHint("纬度 31.1289");
+        etLat.setHint("纬度 30.657");
         etLat.setTextSize(12f);
         etLat.setInputType(android.text.InputType.TYPE_CLASS_NUMBER
                 | android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL
                 | android.text.InputType.TYPE_NUMBER_FLAG_SIGNED);
         etLng = new EditText(this);
-        etLng.setHint("经度 104.3979");
+        etLng.setHint("经度 104.066");
         etLng.setTextSize(12f);
         etLng.setInputType(android.text.InputType.TYPE_CLASS_NUMBER
                 | android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL

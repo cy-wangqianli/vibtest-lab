@@ -299,6 +299,11 @@ def main(argv=None):
     ap.add_argument("--strict-synthetics", action="store_true",
                     help="连 d8/R8 生成的合成类与方法名一起比对"
                          "（需要与成品同版本的 build-tools，否则必然误报）")
+    ap.add_argument("--skip", action="append", default=[],
+                    choices=["manifest", "resources", "assets", "dex"],
+                    help="跳过某一维度。典型用法：--skip assets —— 改了地图锚点后 "
+                         "mapstreet.html/mapleaflet.html 的内容必然与成品不同，这是**声明的差异**，"
+                         "不是回归。")
     args = ap.parse_args(argv)
 
     for p in (args.expect, args.actual):
@@ -319,6 +324,7 @@ def main(argv=None):
 
     rows = []          # (ok, 项目, 期望, 实际)
     all_ok = True
+    skip = set(args.skip or [])
 
     print("期望: %s" % Path(args.expect).resolve())
     print("实际: %s" % Path(args.actual).resolve())
@@ -326,42 +332,48 @@ def main(argv=None):
     print()
 
     try:
-        bd_e = get_badging(aapt, args.expect)
-        bd_a = get_badging(aapt, args.actual)
-        ignore = () if args.strict else IGNORED_MANIFEST
-        all_ok &= cmp_dict("清单", bd_e, bd_a, rows, ignore=ignore)
+        if "manifest" not in skip:
+            bd_e = get_badging(aapt, args.expect)
+            bd_a = get_badging(aapt, args.actual)
+            ignore = () if args.strict else IGNORED_MANIFEST
+            all_ok &= cmp_dict("清单", bd_e, bd_a, rows, ignore=ignore)
 
-        tr_e = get_manifest_tree(aapt, args.expect)
-        tr_a = get_manifest_tree(aapt, args.actual)
-        for key in ("permissions", "actions", "components", "labels"):
-            all_ok &= cmp_set(key, tr_e.get(key, []), tr_a.get(key, []), rows)
+            tr_e = get_manifest_tree(aapt, args.expect)
+            tr_a = get_manifest_tree(aapt, args.actual)
+            for key in ("permissions", "actions", "components", "labels"):
+                all_ok &= cmp_set(key, tr_e.get(key, []), tr_a.get(key, []), rows)
+        else:
+            bd_e = bd_a = {}
 
-        res_e = get_res_package(aapt, args.expect)
-        res_a = get_res_package(aapt, args.actual)
-        if res_e != res_a:
-            all_ok = False
-            rows.append((False, "resources.arsc 包名", res_e, res_a))
-
-        as_e = get_assets(args.expect)
-        as_a = get_assets(args.actual)
-        all_ok &= cmp_set("assets 文件集", as_e, as_a, rows)
-        common = sorted(set(as_e) & set(as_a))
-        bad = [n for n in common if as_e[n] != as_a[n]]
-        if bad:
-            all_ok = False
-            rows.append((False, "assets 内容不一致", fmt_list(bad), ""))
-
-        cl_e = get_classes(dexdump, args.expect)
-        cl_a = get_classes(dexdump, args.actual)
-        if not args.strict_synthetics:
-            cl_e = filter_synthetics(cl_e)
-            cl_a = filter_synthetics(cl_a)
-        all_ok &= cmp_set("dex 类集合", cl_e, cl_a, rows)
-        for c in sorted(set(cl_e) & set(cl_a)):
-            if cl_e[c] != cl_a[c]:
+        if "resources" not in skip:
+            res_e = get_res_package(aapt, args.expect)
+            res_a = get_res_package(aapt, args.actual)
+            if res_e != res_a:
                 all_ok = False
-                d = set(cl_e[c]) ^ set(cl_a[c])
-                rows.append((False, "类方法差异 %s" % c, fmt_list(sorted(d)), ""))
+                rows.append((False, "resources.arsc 包名", res_e, res_a))
+
+        if "assets" not in skip:
+            as_e = get_assets(args.expect)
+            as_a = get_assets(args.actual)
+            all_ok &= cmp_set("assets 文件集", as_e, as_a, rows)
+            common = sorted(set(as_e) & set(as_a))
+            bad = [n for n in common if as_e[n] != as_a[n]]
+            if bad:
+                all_ok = False
+                rows.append((False, "assets 内容不一致", fmt_list(bad), ""))
+
+        if "dex" not in skip:
+            cl_e = get_classes(dexdump, args.expect)
+            cl_a = get_classes(dexdump, args.actual)
+            if not args.strict_synthetics:
+                cl_e = filter_synthetics(cl_e)
+                cl_a = filter_synthetics(cl_a)
+            all_ok &= cmp_set("dex 类集合", cl_e, cl_a, rows)
+            for c in sorted(set(cl_e) & set(cl_a)):
+                if cl_e[c] != cl_a[c]:
+                    all_ok = False
+                    d = set(cl_e[c]) ^ set(cl_a[c])
+                    rows.append((False, "类方法差异 %s" % c, fmt_list(sorted(d)), ""))
     except RuntimeError as e:
         print("✗ %s" % e, file=sys.stderr)
         return 2

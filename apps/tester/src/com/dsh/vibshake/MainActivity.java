@@ -955,8 +955,8 @@ public class MainActivity extends Activity implements SensorEventListener, andro
     }
 
     private void exportSimRoute() {
-        double baseLat = Double.isNaN(lastLat) ? 31.1289 : lastLat;
-        double baseLng = Double.isNaN(lastLng) ? 104.3979 : lastLng;
+        double baseLat = Double.isNaN(lastLat) ? 30.657 : lastLat;
+        double baseLng = Double.isNaN(lastLng) ? 104.066 : lastLng;
         double[] g = GeoUtil.wgs2gcj(baseLat, baseLng);
         double lat0 = g[0], lng0 = g[1];
 
